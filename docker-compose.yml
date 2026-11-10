@@ -1,0 +1,98 @@
+# Starter WordPress pour Coolify
+# OpenLiteSpeed (LSCache page cache) + MariaDB + Redis (object cache) + conteneur SSH/SFTP/WP-CLI
+#
+# A déployer depuis un dépôt Git (le service "ssh" utilise build:).
+# Les variables SERVICE_* sont générées et persistées par Coolify.
+
+services:
+  db:
+    image: mariadb:10.11
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${SERVICE_PASSWORD_64_MARIADBROOT}
+      MARIADB_DATABASE: ${DB_NAME:-wordpress}
+      MARIADB_USER: ${SERVICE_USER_MARIADB}
+      MARIADB_PASSWORD: ${SERVICE_PASSWORD_64_MARIADB}
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Cache pur : pas de persistance disque, éviction LRU quand la mémoire est pleine
+    command: >
+      redis-server
+      --requirepass ${SERVICE_PASSWORD_REDIS}
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+      --appendonly no
+    environment:
+      REDIS_PASSWORD: ${SERVICE_PASSWORD_REDIS}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  wordpress:
+    # PHP 8.5 : garder PHP_VERSION du service ssh aligné
+    image: litespeedtech/openlitespeed:1.8.5-lsphp85
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Coolify génère le domaine et route le proxy vers le port 80 interne
+      - SERVICE_FQDN_WORDPRESS_80
+    volumes:
+      - wp_data:/var/www/vhosts/localhost/html
+
+  ssh:
+    build:
+      context: ./ssh
+      args:
+        PHP_VERSION: "8.5"   # doit correspondre à la version lsphp ci-dessus
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    # Aucun port publié : l'accès passe par le tunnel Cloudflare (service cloudflared)
+    expose:
+      - "22"
+    environment:
+      # UID/GID du process lsphp (propriétaire des fichiers WP) — à vérifier, voir README
+      WEB_UID: ${WEB_UID:-65534}
+      WEB_GID: ${WEB_GID:-65534}
+      SSH_PUBLIC_KEY: ${SSH_PUBLIC_KEY}
+      SSH_PASSWORD: ${SSH_PASSWORD:-}          # vide = authentification par mot de passe désactivée
+      WP_PATH: /var/www/vhosts/localhost/html
+      WP_LOCALE: ${WP_LOCALE:-fr_FR}
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_NAME: ${DB_NAME:-wordpress}
+      WORDPRESS_DB_USER: ${SERVICE_USER_MARIADB}
+      WORDPRESS_DB_PASSWORD: ${SERVICE_PASSWORD_64_MARIADB}
+    volumes:
+      - wp_data:/var/www/vhosts/localhost/html
+      - ssh_hostkeys:/etc/ssh/keys
+
+  # Tunnel sortant vers Cloudflare : ssh.ton-domaine.com -> ssh://ssh:22
+  # Aucun port entrant à ouvrir sur le serveur.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - ssh
+
+volumes:
+  db_data:
+  wp_data:
+  ssh_hostkeys:
