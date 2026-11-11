@@ -517,6 +517,7 @@ sont écrites entre guillemets.
 | Boucle de redirection 301 vers la même URL, `server: LiteSpeed` | WordPress absent (conteneur `ssh` en échec) ou règle `.htaccess` testant `%{HTTPS}` | Corriger le conteneur `ssh` ; remplacer la condition par `%{HTTP:X-Forwarded-Proto} !https` |
 | `exec /entrypoint.sh: permission denied` | Script non exécutable dans Git | Étape 3, `git update-index --chmod=+x` |
 | Build en échec sur `FROM wordpress:cli-php8.5` | Tag absent de Docker Hub | Vérifier les tags `wordpress:cli-*`, ajuster `PHP_VERSION` |
+| Boucle 301 vers la même URL via le proxy alors que `curl` direct sur le port 80 répond 302/200 | Traefik envoie le trafic au port 7080 (console d'admin OpenLiteSpeed, seul port déclaré par l'image) | Label `traefik.http.services.wp-${SERVICE_USER_TRAEFIKID}.loadbalancer.server.port=80` sur `wordpress` (présent dans le compose) |
 | Erreur 404 ou boucle 301 servie par LiteSpeed | Volume `wp_data` monté hors du docRoot réellement servi | Dans `wordpress`, monter `wp_data` sur `/var/www/vhosts/localhost/html` (vhost `localhost` du template `docker`), pas sur `/usr/local/lsws/Example/html` |
 | « Error establishing a database connection » | MariaDB pas prête ou mot de passe modifié après coup | Journaux de `db` ; ne pas changer les mots de passe générés |
 | Boucle de redirection HTTPS | Proxy TLS non détecté, ou Cloudflare en mode « Flexible » | Vérifier le bloc `HTTP_X_FORWARDED_PROTO` dans `wp-config.php` ; Cloudflare en « Full (strict) » |

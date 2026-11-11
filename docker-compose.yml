@@ -54,6 +54,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    labels:
+      # L'image OpenLiteSpeed déclare EXPOSE 7080 (console d'admin HTTPS). Sans port explicite,
+      # Traefik envoie le trafic vers 7080 : boucle 301 et console d'admin exposée.
+      # On force le port 80. Le nom du service Traefik doit être unique par site sur le serveur :
+      # SERVICE_USER_TRAEFIKID est une valeur aléatoire générée et conservée par Coolify.
+      - traefik.http.services.wp-${SERVICE_USER_TRAEFIKID}.loadbalancer.server.port=80
     environment:
       # Coolify génère le domaine et route le proxy vers le port 80 interne
       - SERVICE_FQDN_WORDPRESS_80
