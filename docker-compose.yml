@@ -78,12 +78,12 @@ services:
       - PHP_OPCACHE_REVALIDATE_FREQ=${PHP_OPCACHE_REVALIDATE_FREQ:-2}
       - PHP_EXTRA_INI=${PHP_EXTRA_INI:-}
     volumes:
-      # L'image sert le vhost "Example" : docRoot = /usr/local/lsws/Example/html.
-      # nocopy évite que Docker recopie les fichiers de démo de l'image (index.html, phpinfo…) dans le volume.
-      # Le même volume est monté sous /var/www/vhosts/localhost/html dans le conteneur ssh.
+      # Les ports 80/443 de l'image sont servis par le vhost "localhost" (template "docker",
+      # vhDomain "localhost, *") : docRoot = /var/www/vhosts/localhost/html.
+      # Le vhost "Example" est le vhost de démonstration d'OpenLiteSpeed : ne pas y monter le site.
       - type: volume
         source: wp_data
-        target: /usr/local/lsws/Example/html
+        target: /var/www/vhosts/localhost/html
         volume:
           nocopy: true
 
