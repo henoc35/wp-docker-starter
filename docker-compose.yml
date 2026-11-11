@@ -1,8 +1,9 @@
 # Starter WordPress pour Coolify
 # OpenLiteSpeed (LSCache page cache) + MariaDB + Redis (object cache) + conteneur SSH/SFTP/WP-CLI
 #
-# A déployer depuis un dépôt Git (le service "ssh" utilise build:).
+# A déployer depuis un dépôt Git (les services "wordpress" et "ssh" utilisent build:).
 # Les variables SERVICE_* sont générées et persistées par Coolify.
+# Les variables PHP_* et WP_* ont une valeur par défaut et sont modifiables dans Coolify (voir GUIDE.md).
 
 services:
   db:
@@ -28,7 +29,7 @@ services:
     command: >
       redis-server
       --requirepass ${SERVICE_PASSWORD_REDIS}
-      --maxmemory 256mb
+      --maxmemory ${REDIS_MAXMEMORY:-256mb}
       --maxmemory-policy allkeys-lru
       --save ""
       --appendonly no
@@ -41,8 +42,12 @@ services:
       retries: 10
 
   wordpress:
-    # PHP 8.5 : garder PHP_VERSION du service ssh aligné
-    image: litespeedtech/openlitespeed:1.8.5-lsphp85
+    # Image OpenLiteSpeed officielle + réglages PHP par variables d'environnement
+    build:
+      context: .
+      dockerfile: wordpress/Dockerfile
+      args:
+        OLS_TAG: "1.8.5-lsphp85"   # garder PHP_VERSION du service ssh aligné (8.5)
     restart: unless-stopped
     depends_on:
       db:
@@ -52,12 +57,40 @@ services:
     environment:
       # Coolify génère le domaine et route le proxy vers le port 80 interne
       - SERVICE_FQDN_WORDPRESS_80
+      # --- Réglages PHP du site (php.ini de lsphp)
+      - PHP_MEMORY_LIMIT=${PHP_MEMORY_LIMIT:-512M}
+      - PHP_UPLOAD_MAX_FILESIZE=${PHP_UPLOAD_MAX_FILESIZE:-128M}
+      - PHP_POST_MAX_SIZE=${PHP_POST_MAX_SIZE:-128M}
+      - PHP_MAX_EXECUTION_TIME=${PHP_MAX_EXECUTION_TIME:-300}
+      - PHP_MAX_INPUT_TIME=${PHP_MAX_INPUT_TIME:-300}
+      - PHP_MAX_INPUT_VARS=${PHP_MAX_INPUT_VARS:-5000}
+      - PHP_MAX_FILE_UPLOADS=${PHP_MAX_FILE_UPLOADS:-50}
+      - PHP_DATE_TIMEZONE=${PHP_DATE_TIMEZONE:-UTC}
+      - PHP_DISPLAY_ERRORS=${PHP_DISPLAY_ERRORS:-Off}
+      - PHP_ERROR_REPORTING=${PHP_ERROR_REPORTING:-E_ALL & ~E_DEPRECATED}
+      - PHP_REALPATH_CACHE_SIZE=${PHP_REALPATH_CACHE_SIZE:-4096K}
+      - PHP_SESSION_GC_MAXLIFETIME=${PHP_SESSION_GC_MAXLIFETIME:-1440}
+      - PHP_OPCACHE_ENABLE=${PHP_OPCACHE_ENABLE:-1}
+      - PHP_OPCACHE_MEMORY_CONSUMPTION=${PHP_OPCACHE_MEMORY_CONSUMPTION:-256}
+      - PHP_OPCACHE_INTERNED_STRINGS_BUFFER=${PHP_OPCACHE_INTERNED_STRINGS_BUFFER:-16}
+      - PHP_OPCACHE_MAX_ACCELERATED_FILES=${PHP_OPCACHE_MAX_ACCELERATED_FILES:-20000}
+      - PHP_OPCACHE_VALIDATE_TIMESTAMPS=${PHP_OPCACHE_VALIDATE_TIMESTAMPS:-1}
+      - PHP_OPCACHE_REVALIDATE_FREQ=${PHP_OPCACHE_REVALIDATE_FREQ:-2}
+      - PHP_EXTRA_INI=${PHP_EXTRA_INI:-}
     volumes:
-      - wp_data:/var/www/vhosts/localhost/html
+      # L'image sert le vhost "Example" : docRoot = /usr/local/lsws/Example/html.
+      # nocopy évite que Docker recopie les fichiers de démo de l'image (index.html, phpinfo…) dans le volume.
+      # Le même volume est monté sous /var/www/vhosts/localhost/html dans le conteneur ssh.
+      - type: volume
+        source: wp_data
+        target: /usr/local/lsws/Example/html
+        volume:
+          nocopy: true
 
   ssh:
     build:
-      context: ./ssh
+      context: .
+      dockerfile: ssh/Dockerfile
       args:
         PHP_VERSION: "8.5"   # doit correspondre à la version lsphp ci-dessus
     restart: unless-stopped
@@ -68,17 +101,35 @@ services:
     expose:
       - "22"
     environment:
-      # UID/GID du process lsphp (propriétaire des fichiers WP) — à vérifier, voir README
+      # UID/GID du process lsphp (propriétaire des fichiers WP)
       WEB_UID: ${WEB_UID:-65534}
       WEB_GID: ${WEB_GID:-65534}
-      SSH_PUBLIC_KEY: ${SSH_PUBLIC_KEY}
-      SSH_PASSWORD: ${SSH_PASSWORD:-}          # vide = authentification par mot de passe désactivée
+      SSH_PUBLIC_KEY: ${SSH_PUBLIC_KEY:-}
+      SSH_PASSWORD: ${SSH_PASSWORD:-}
       WP_PATH: /var/www/vhosts/localhost/html
       WP_LOCALE: ${WP_LOCALE:-fr_FR}
       WORDPRESS_DB_HOST: db
       WORDPRESS_DB_NAME: ${DB_NAME:-wordpress}
       WORDPRESS_DB_USER: ${SERVICE_USER_MARIADB}
       WORDPRESS_DB_PASSWORD: ${SERVICE_PASSWORD_64_MARIADB}
+      # --- PHP de WP-CLI
+      WPCLI_MEMORY_LIMIT: ${WPCLI_MEMORY_LIMIT:-512M}
+      PHP_DATE_TIMEZONE: ${PHP_DATE_TIMEZONE:-UTC}
+      # --- Constantes wp-config.php (vide = non modifiée), appliquées à chaque démarrage
+      WP_MEMORY_LIMIT: ${WP_MEMORY_LIMIT:-256M}
+      WP_MAX_MEMORY_LIMIT: ${WP_MAX_MEMORY_LIMIT:-512M}
+      WP_DEBUG: ${WP_DEBUG:-false}
+      WP_DEBUG_LOG: ${WP_DEBUG_LOG:-false}
+      WP_DEBUG_DISPLAY: ${WP_DEBUG_DISPLAY:-false}
+      WP_ENVIRONMENT_TYPE: ${WP_ENVIRONMENT_TYPE:-production}
+      DISALLOW_FILE_EDIT: ${DISALLOW_FILE_EDIT:-true}
+      DISALLOW_FILE_MODS: ${DISALLOW_FILE_MODS:-}
+      WP_POST_REVISIONS: ${WP_POST_REVISIONS:-10}
+      AUTOSAVE_INTERVAL: ${AUTOSAVE_INTERVAL:-120}
+      EMPTY_TRASH_DAYS: ${EMPTY_TRASH_DAYS:-30}
+      DISABLE_WP_CRON: ${DISABLE_WP_CRON:-false}
+      WP_AUTO_UPDATE_CORE: ${WP_AUTO_UPDATE_CORE:-minor}
+      FORCE_SSL_ADMIN: ${FORCE_SSL_ADMIN:-true}
     volumes:
       - wp_data:/var/www/vhosts/localhost/html
       - ssh_hostkeys:/etc/ssh/keys

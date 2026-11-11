@@ -12,6 +12,9 @@ if [ -z "${SSH_PUBLIC_KEY:-}" ] && [ -z "${SSH_PASSWORD:-}" ]; then
   exit 1
 fi
 
+# --- Réglages PHP de WP-CLI (mémoire, fuseau horaire) issus des variables d'environnement
+/usr/local/bin/php-env.sh cli > /usr/local/etc/php/conf.d/zz-starter-env.ini
+
 # --- Utilisateur aligné sur l'UID/GID du process PHP (fichiers WP modifiables des deux côtés)
 getent group "$USER_NAME" >/dev/null || groupadd -o -g "$WEB_GID" "$USER_NAME"
 id "$USER_NAME" >/dev/null 2>&1 || useradd -o -u "$WEB_UID" -g "$WEB_GID" -d "$HOME_DIR" -m -s /bin/bash "$USER_NAME"
@@ -88,9 +91,24 @@ if [ ! -f "$WP_PATH/wp-config.php" ]; then
 if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
     $_SERVER['HTTPS'] = 'on';
 }
-define('DISALLOW_FILE_EDIT', true);
 PHP
 fi
+
+# --- Constantes WordPress pilotées par variables d'environnement (appliquées à chaque démarrage)
+# Variable vide ou absente = constante laissée telle quelle dans wp-config.php.
+# true/false/nombres entiers sont écrits bruts ; le reste entre guillemets.
+WP_CONSTANTS="WP_MEMORY_LIMIT WP_MAX_MEMORY_LIMIT WP_DEBUG WP_DEBUG_LOG WP_DEBUG_DISPLAY
+WP_ENVIRONMENT_TYPE DISALLOW_FILE_EDIT DISALLOW_FILE_MODS WP_POST_REVISIONS AUTOSAVE_INTERVAL
+EMPTY_TRASH_DAYS DISABLE_WP_CRON WP_AUTO_UPDATE_CORE FORCE_SSL_ADMIN"
+
+for CONST_NAME in $WP_CONSTANTS; do
+  CONST_VALUE="${!CONST_NAME:-}"
+  [ -z "$CONST_VALUE" ] && continue
+  if [[ "$CONST_VALUE" =~ ^(true|false|[0-9]+)$ ]]; then CONST_RAW=--raw; else CONST_RAW=; fi
+  export CONST_NAME CONST_VALUE CONST_RAW
+  as_user 'wp config set "$CONST_NAME" "$CONST_VALUE" $CONST_RAW --type=constant --path="$WP_PATH" --quiet'
+  echo "wp-config : $CONST_NAME = $CONST_VALUE"
+done
 
 echo "SSH prêt (utilisateur: ${USER_NAME}, mot de passe: ${PW_AUTH})"
 exec /usr/sbin/sshd -D -e

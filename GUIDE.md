@@ -48,7 +48,7 @@ Toi ──SSH──> Cloudflare ──tunnel sortant──> cloudflared ──> 
 |---------------|---------------------------------------------|-------------------------------------------------------|
 | `db`          | `mariadb:10.11`                             | Base de données                                       |
 | `redis`       | `redis:7-alpine`                            | Cache objet (sans persistance disque)                 |
-| `wordpress`   | `litespeedtech/openlitespeed:1.8.5-lsphp85` | Serveur web + PHP 8.5 + cache de page LSCache         |
+| `wordpress`   | construite depuis `wordpress/Dockerfile` (base `litespeedtech/openlitespeed:1.8.5-lsphp85`) | Serveur web + PHP 8.5 + cache de page LSCache ; réglages PHP par variables |
 | `ssh`         | construite depuis `ssh/Dockerfile`          | SSH, SFTP, WP-CLI, client MariaDB, `redis-cli`        |
 | `cloudflared` | `cloudflare/cloudflared:latest`             | Tunnel sortant vers Cloudflare pour l'accès SSH       |
 
@@ -433,6 +433,77 @@ Et dans le conteneur `wordpress`, vérifie que l'extension PHP Redis est chargé
 Générées et persistées par Coolify (voir tableau de l'étape 5). Ne pas les saisir.
 `SERVICE_FQDN_WORDPRESS_80` dépend du domaine attribué au service `wordpress`.
 
+### Réglages PHP du site (service `wordpress`)
+
+Écrits à chaque démarrage dans un bloc en fin du `php.ini` de lsphp
+(`/usr/local/lsws/lsphp85/etc/php/8.5/litespeed/php.ini`). Modifier la variable dans Coolify, puis redéployer.
+
+| Variable | Défaut | Directive PHP | Notes |
+|----------|--------|---------------|-------|
+| `PHP_MEMORY_LIMIT` | `512M` | `memory_limit` | Mémoire max par requête |
+| `PHP_UPLOAD_MAX_FILESIZE` | `128M` | `upload_max_filesize` | Taille max d'un fichier envoyé |
+| `PHP_POST_MAX_SIZE` | `128M` | `post_max_size` | Doit être ≥ `PHP_UPLOAD_MAX_FILESIZE` |
+| `PHP_MAX_EXECUTION_TIME` | `300` | `max_execution_time` | Secondes |
+| `PHP_MAX_INPUT_TIME` | `300` | `max_input_time` | Secondes |
+| `PHP_MAX_INPUT_VARS` | `5000` | `max_input_vars` | Menus, WooCommerce, constructeurs de pages |
+| `PHP_MAX_FILE_UPLOADS` | `50` | `max_file_uploads` | Fichiers par requête |
+| `PHP_DATE_TIMEZONE` | `UTC` | `date.timezone` | Ex. `Africa/Abidjan` (aussi appliqué à WP-CLI) |
+| `PHP_DISPLAY_ERRORS` | `Off` | `display_errors` | `On` seulement hors production |
+| `PHP_ERROR_REPORTING` | `E_ALL & ~E_DEPRECATED` | `error_reporting` | |
+| `PHP_REALPATH_CACHE_SIZE` | `4096K` | `realpath_cache_size` | |
+| `PHP_SESSION_GC_MAXLIFETIME` | `1440` | `session.gc_maxlifetime` | Secondes |
+| `PHP_OPCACHE_ENABLE` | `1` | `opcache.enable` | |
+| `PHP_OPCACHE_MEMORY_CONSUMPTION` | `256` | `opcache.memory_consumption` | Mo |
+| `PHP_OPCACHE_INTERNED_STRINGS_BUFFER` | `16` | `opcache.interned_strings_buffer` | Mo |
+| `PHP_OPCACHE_MAX_ACCELERATED_FILES` | `20000` | `opcache.max_accelerated_files` | |
+| `PHP_OPCACHE_VALIDATE_TIMESTAMPS` | `1` | `opcache.validate_timestamps` | `0` = plus rapide, mais redémarrer après chaque modification de code |
+| `PHP_OPCACHE_REVALIDATE_FREQ` | `2` | `opcache.revalidate_freq` | Secondes |
+| `PHP_EXTRA_INI` | *(vide)* | libre | Directives supplémentaires, une par ligne. Ex. `opcache.jit = tracing` |
+
+Vérification, dans le conteneur `wordpress` :
+```bash
+tail -n 25 /usr/local/lsws/lsphp85/etc/php/8.5/litespeed/php.ini
+```
+
+### PHP de WP-CLI (service `ssh`)
+
+| Variable | Défaut | Rôle |
+|----------|--------|------|
+| `WPCLI_MEMORY_LIMIT` | `512M` | `memory_limit` de WP-CLI. 128M ne suffit pas à extraire l'archive WordPress |
+| `PHP_DATE_TIMEZONE` | `UTC` | Même variable que pour le site |
+
+### Constantes WordPress (`wp-config.php`)
+
+Appliquées par le conteneur `ssh` **à chaque démarrage** avec `wp config set`.
+Une variable vide laisse la constante telle qu'elle est dans `wp-config.php`.
+Pour supprimer une constante déjà écrite : `wp config delete NOM_DE_LA_CONSTANTE`.
+
+| Variable | Défaut | Rôle |
+|----------|--------|------|
+| `WP_MEMORY_LIMIT` | `256M` | Mémoire côté site (≤ `PHP_MEMORY_LIMIT`) |
+| `WP_MAX_MEMORY_LIMIT` | `512M` | Mémoire côté administration |
+| `WP_DEBUG` | `false` | Mode débogage |
+| `WP_DEBUG_LOG` | `false` | `true` = journal dans `wp-content/debug.log` |
+| `WP_DEBUG_DISPLAY` | `false` | Affiche les erreurs à l'écran (jamais en production) |
+| `WP_ENVIRONMENT_TYPE` | `production` | `production`, `staging`, `development` ou `local` |
+| `DISALLOW_FILE_EDIT` | `true` | Désactive l'éditeur de thèmes/extensions dans l'admin |
+| `DISALLOW_FILE_MODS` | *(vide)* | `true` = aucune installation ni mise à jour depuis l'admin (tout via WP-CLI) |
+| `WP_POST_REVISIONS` | `10` | Nombre de révisions conservées (`false` = aucune) |
+| `AUTOSAVE_INTERVAL` | `120` | Secondes entre deux sauvegardes automatiques |
+| `EMPTY_TRASH_DAYS` | `30` | Jours avant vidage de la corbeille |
+| `DISABLE_WP_CRON` | `false` | `true` si un vrai cron appelle `wp cron event run --due-now` |
+| `WP_AUTO_UPDATE_CORE` | `minor` | `true`, `false` ou `minor` |
+| `FORCE_SSL_ADMIN` | `true` | Force l'HTTPS sur l'administration |
+
+Les valeurs `true`, `false` et les nombres entiers sont écrits tels quels ; les autres (`256M`, `production`, `minor`)
+sont écrites entre guillemets.
+
+### Redis
+
+| Variable | Défaut | Rôle |
+|----------|--------|------|
+| `REDIS_MAXMEMORY` | `256mb` | Mémoire max de Redis avant éviction des clés les moins utilisées |
+
 ---
 
 ## 14. Dépannage
@@ -440,9 +511,13 @@ Générées et persistées par Coolify (voir tableau de l'étape 5). Ne pas les 
 | Symptôme | Cause probable | Solution |
 |----------|----------------|----------|
 | Le conteneur `ssh` redémarre en boucle avec « ERREUR : définis SSH_PUBLIC_KEY » | Aucune clé ni mot de passe | Renseigner `SSH_PUBLIC_KEY` |
+| Le conteneur `ssh` redémarre en boucle avec « Allowed memory size of 134217728 bytes exhausted » | Limite mémoire de WP-CLI trop basse | Augmenter `WPCLI_MEMORY_LIMIT` (512M par défaut) et redéployer |
+| Un réglage PHP n'est pas pris en compte | Conteneur non recréé, ou valeur écrasée par `PHP_EXTRA_INI` | Redéployer ; vérifier le bloc `starter-env` en fin du `php.ini` de lsphp |
+| `Fatal error ... wp-config.php` après changement d'une variable `WP_*` | Valeur invalide pour la constante | Corriger la variable, ou `wp config delete <CONSTANTE>`, puis redéployer |
+| Boucle de redirection 301 vers la même URL, `server: LiteSpeed` | WordPress absent (conteneur `ssh` en échec) ou règle `.htaccess` testant `%{HTTPS}` | Corriger le conteneur `ssh` ; remplacer la condition par `%{HTTP:X-Forwarded-Proto} !https` |
 | `exec /entrypoint.sh: permission denied` | Script non exécutable dans Git | Étape 3, `git update-index --chmod=+x` |
 | Build en échec sur `FROM wordpress:cli-php8.5` | Tag absent de Docker Hub | Vérifier les tags `wordpress:cli-*`, ajuster `PHP_VERSION` |
-| Le site affiche la page par défaut d'OpenLiteSpeed | `index.html` présent avant WordPress | Supprimer `/var/www/vhosts/localhost/html/index.html` |
+| Le site affiche la page par défaut d’OpenLiteSpeed, ou une boucle 301 | Volume monté hors du docRoot servi (vhost `Example`) | Le volume `wp_data` doit être monté sur `/usr/local/lsws/Example/html` dans `wordpress` |
 | « Error establishing a database connection » | MariaDB pas prête ou mot de passe modifié après coup | Journaux de `db` ; ne pas changer les mots de passe générés |
 | Boucle de redirection HTTPS | Proxy TLS non détecté, ou Cloudflare en mode « Flexible » | Vérifier le bloc `HTTP_X_FORWARDED_PROTO` dans `wp-config.php` ; Cloudflare en « Full (strict) » |
 | Tunnel « inactif » dans Cloudflare | Jeton erroné ou `cloudflared` arrêté | Journaux du service `cloudflared` |
